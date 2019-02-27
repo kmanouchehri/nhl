@@ -1,0 +1,261 @@
+---
+title: "EDA Starter"
+author: ""
+header-includes:
+   - \usepackage{placeins}
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+library(knitr)
+knitr::opts_chunk$set(echo = TRUE)
+opts_chunk$set(tidy.opts=list(width.cutoff=60),tidy=TRUE)
+library(plyr)
+library(tidyr)
+library(stringr)
+library(tidyverse)
+library(magrittr)
+library(scatterplot3d)
+library(plotrix)
+library(caret)
+library(car)
+```
+
+```{r setup data}
+setwd("~/Documents/STAT 6500")
+
+data <- read.csv("NHL 1718 CSV.csv")
+
+# map missing values involving where players are from and draft and free agent status
+data$Pr.St = mapvalues(data$Pr.St, from = "", to="INT")
+data$DftYr = mapvalues(data$DftYr, from = NA, to="UD")
+data$DftRd = mapvalues(data$DftRd, from = NA, to="UD")
+data$Ovrl = mapvalues(data$Ovrl, from = NA, to="UD")
+data$DftYr = as.factor(data$DftYr)
+data$DftRd = as.factor(data$DftRd)
+data$Ovrl = as.factor(data$Ovrl)
+data$Position = as.factor(data$Position)
+data$Debut[749] = 2015
+
+# create indicators for if the player has reached RFA or UFA status
+data$StatusRFA = ifelse(data$Status == "RFA", 1, 0)
+data$StatusUFA = ifelse(data$Status == "UFA", 1, 0)
+data[,"Status"] <- list(NULL)
+
+bday_parts = str_split_fixed(data$Born, "/", 3)
+data$birth_year = as.numeric(bday_parts[,1])
+data$birth_month = as.numeric(bday_parts[,2])
+data$birth_day = as.numeric(bday_parts[,3])
+
+# drop missing salaries because they did not play enough/any games
+# map some missing values from NA to 0 or to median values
+data <- data %>% drop_na(Salary)
+data$MGL = mapvalues(data$MGL, from = NA, to = 0)
+data$CHIP = data$Cap.Hit * data$MGL
+data$SOS = mapvalues(data$SOS, from = NA, to = median(data$SOS, na.rm = TRUE))
+data$SOG = mapvalues(data$SOG, from = NA, to = median(data$SOG, na.rm = TRUE))
+data$SOGDG = mapvalues(data$SOGDG, from = NA, to = median(data$SOGDG, na.rm = TRUE))
+
+# rename columns that got changed on import
+colnames(data)[32] <- "plusMinus"
+colnames(data)[33] <- "expectedPlusMinus"
+colnames(data)[36] <- "TOI.Secs"
+colnames(data)[37] <- "TOI.Mins"
+
+# remove duplicate metrics or find average from multiple statistic providers
+data[,c("TOI.2", "TOI.3")] <- list(NULL)
+colnames(data)[39] <- "TOI.Percent"
+colnames(data)[40] <- "IPP.Percent"
+data$iCF <- (data$iCF + data$iCF.1 + data$iCF.2)/3
+data[,c("iCF.1", "iCF.2")] <- list(NULL)
+data$iFF <- (data$iFF + data$iFF.1)/2
+data[,c("iFF.1")] <- list(NULL)
+colnames(data)[57] <- "ZS.Percent"
+data$iHF <- (data$iHF + data$iHF.1)/2
+data[,c("iHF.1")] <- list(NULL)
+colnames(data)[65] <- "BLK.Percent"
+colnames(data)[68] <- "FO.Percent"
+data$CF <- (data$CF + data$CF.1)/2
+data[,c("CF.1")] <- list(NULL)
+data$CA <- (data$CA + data$CA.1)/2
+data[,c("CA.1")] <- list(NULL)
+data$FF <- (data$FF + data$FF.1)/2
+data[,c("FF.1")] <- list(NULL)
+data$FA <- (data$FA + data$FA.1)/2
+data[,c("FA.1")] <- list(NULL)
+data$SF <- (data$SF + data$SF.1)/2
+data[,c("SF.1")] <- list(NULL)
+data$SA <- (data$SA + data$SA.1)/2
+data[,c("SA.1")] <- list(NULL)
+data$GF <- (data$GF + data$GF.1)/2
+data[,c("GF.1")] <- list(NULL)
+data$GA <- (data$GA + data$GA.1)/2
+data[,c("GA.1")] <- list(NULL)
+
+# WAR metrics per salary
+data$WarPerSalary <- data$WAR / data$Salary
+data$OWarPerSalary <- data$OWAR / data$Salary
+data$DWarPerSalary <- data$DWAR / data$Salary
+
+all_missing_list =  colnames(data)[colSums(is.na(data)) > 0]
+length(all_missing_list) == 0
+# if above true, all missing values eliminated
+
+data[,all_missing_list] <- list(NULL)
+all_missing_list =  colnames(data)[colSums(is.na(data)) > 0]
+length(all_missing_list) == 0
+# if above true, dataset has no missing values
+```
+
+## II. Data
+
+Similar to Major League Baseball specifically and the other major professional sports, salaries for the National Hockey League exhibit patterns that are a result of the built-in infrastructure. NHL players' salaries are actively suppressed when they are relatively new to the league. The merits of this and whether it is a good thing or not serve for an interesting discussion, but that is a matter for another time. When a players is drafted by a team, they are restricted to a rookie contract. For those drafted in 2018, this equates to a maximum salary of $925,000 per season with bonuses that can boost compensation to \$3,775,000 at most. If the player is 18-21 years of age when drafted, the contract is of length 3 years; if he is 22-23, the length is 2 years. If he is 24, the length is 1 year. 
+
+Once this rookie contract expires, the player is still under team control through restricted free agency. This means that another team can choose to sign the player to an "offer sheet," but the original team has the right to match this offer sheet and retain the player. Only once a player reaches 7 seasons of service time or is 27 years old do they reach unrestricted free agency, where they are free to sign with any team for any amount of money. 
+
+As is the case with all rules, there are exceptions. Young stars are typically rewarded with a big-money, long-term contract while they are still on their rookie deal. In the summer of 2017, Edmonton Oilers player Connor McDavid (considered by many to be the future face of the NHL) was rewarded with an 8-year, $100 million contract despite still being under team control. However, it is best to think of these contracts as being the exception rather than the rule. It is wise to point out that \$925,000 in salary is nothing to sneeze at, but in a multi-billion dollar sports league like the NHL, it is somewhat a drop in the bucket. 
+
+All of the above is another way of saying that NHL salaries are actively skewed, which is important to keep in mind when attempting to analyze factors influencing salary. Those factors that influence salary for unrestricted free agents will not show up for those on their rookie contract. Massive early contract extensions for the stars help to shore that up, but it only does so incrementally.
+
+In addition, it is most likely of more interest to look at more of a performance-based response than simply salary. If a performance per dollar spent response is derived, analyzing factors that influence that metric could be of use in terms of teams getting "more bang for their buck" by targeting performance metrics that increase performance per dollar spent.
+
+This exploratory data analysis, as of this time, uses exclusively 2017-2018 player season data to avoid pseudoreplication and correlation of having multiple seasons of results on the same player. There are 177 statistics on 881 players (9 excluded due to missing salary information) who appeared in a game during the 2017-2018 season. These stats range from traditional statistics that have been used for many years to newly-created "advanced" statistics. The data was obtained from Rob Vollman, considered the father of hockey analytics, of hockeyabstract.com. His data was compiled from the following sources:  
+
+* Primary data came from the official NHL web site.
+* Rebounds, rush shots, high-danger chances, and more came from Natural Stat Trick.
+* Salary cap data came from Cap Friendly.
+* Equipment information came from Gear Geek.
+* Point shares, career data, debut, seasons, and more came from Hockey Reference.
+* Faceoff stats came from Puck Base.
+* Icings and crucial/critical points came from More Hockey Stats.
+* Additional “miscellaneous” data came from Corsica Hockey.
+
+## III. Data Exploration
+\FloatBarrier 
+```{r salary table}
+summary(data$Salary)
+```
+\FloatBarrier
+```{r salary histogram, echo=FALSE, fig.align="center", fig.height=3, fig.width=4}
+hist(data$Salary, 
+     col="green", xlab='Salary', 
+     ylab = "Number of Players", main = NULL)
+```
+\FloatBarrier
+
+As expected, the salaries of NHL players show significant skewing. There are many players making near the minimum; these players are a combination of young players on rookie contracts and those established players who are likely closer to average or below average in quality. Next, let's look at a possible measure of efficiency for paying a player: WAR per salary. WAR (Wins Above Replacement) is a "catch-all" stat that attempts to capture a player's overall impact on the game and how many wins he adds to the team over the course of a season in comparison to a "replacement-level" player, so we can roughly think of WAR per salary as performance added per dollar spent. A log-transformation for WAR per salary will be considered.
+
+\FloatBarrier 
+```{r salary tableLog}
+summary(data$WarPerSalary)
+
+# Log transform WAR per salary with adjustment to avoid problems with negative numbers
+data$logWarPerSalary <- log(data$WarPerSalary + 2e-06)
+summary(data$logWarPerSalary)
+```
+\FloatBarrier
+```{r salary histogramLog, echo=FALSE, fig.align="center"}
+hist(data$WarPerSalary, 
+     col="orange", xlab='WAR Per Salary', 
+     ylab = "Number of Players", main = NULL)
+
+hist(data$logWarPerSalary, breaks = 30,
+     col="blue", xlab='Log-transformed WAR Per Salary', 
+     ylab = "Number of Players", main = NULL)
+```
+\FloatBarrier
+
+Next, factors that could influence performance per salary are explored.
+
+\FloatBarrier
+```{r plots salary, echo=FALSE, fig.align = "center", echo=FALSE}
+par(mfcol = c(1,2))
+# plot(data$G, data$Salary, pch=20, xlab='Goals Scored', ylab='Salary', main=NULL)
+# abline(lm(data$Salary ~ data$G), col="red")
+# 
+# plot(data$A, data$G, pch=20, xlab='Assists', ylab='Goals Scored', main=NULL)
+# abline(lm(data$G ~ data$A), col="red")
+
+plot(data$G, data$logWarPerSalary, pch=20, xlab='Goals Scored', ylab='Log-transformed WAR Per Salary', main=NULL)
+abline(lm(data$logWarPerSalary ~ data$G), col="red")
+
+plot(data$A, data$logWarPerSalary, pch=20, xlab='Assists', ylab='Log-transformed WAR Per Salary', main=NULL)
+abline(lm(data$logWarPerSalary ~ data$A), col="red")
+```
+
+\FloatBarrier
+
+Scoring goals and assisting on goals certainly show some positive association with salary. However, there is plenty of other variance that those two factors do not account for.
+
+\FloatBarrier
+```{r seasonsPlot, echo=FALSE, fig.align="center", fig.height=4, fig.width=4}
+plot(data$Seasons, data$logWarPerSalary, pch=20, xlab='Seasons Played', ylab='Log-transformed WAR Per Salary', main=NULL)
+abline(lm(data$logWarPerSalary ~ data$Seasons), col="red")
+```
+
+\FloatBarrier
+
+For several statistics, it is necessary to include other statistics in conjunction to describe the effect on salary that can be observed.
+
+\FloatBarrier
+
+```{r interactions1, fig.align="center", fig.cap="Interactions: Salary, Time on Ice, and Scoring Chances", echo=FALSE}
+score_3d = scatterplot3d(data$TOI.Mins,data$SCF,data$logWarPerSalary,pch=19,
+                         type="h",
+                         cex.axis=0.5,
+                         las=1,
+                         lty.hplot=2,
+                         color = color.scale(data$logWarPerSalary, c(0,1,1),c(1,1,0),0),
+                         main=NULL,
+                         zlab="Log-transformed WAR Per Salary",xlab="Time on Ice",
+                         ylab="Scoring Chances While Player on Ice",
+                         grid=TRUE)
+score_3d.coords = score_3d$xyz.convert(data$TOI.Mins,data$SCF,data$logWarPerSalary)
+text(score_3d.coords$x, score_3d.coords$y,labels=data$Last.Name,cex=.5, pos=4)
+```
+
+\FloatBarrier
+
+```{r interactions2, fig.align="center", fig.cap="Interactions: Salary, Assists, and Seasons Played", echo=FALSE}
+score_3d = scatterplot3d(data$G,data$Seasons,data$logWarPerSalary,pch=19,
+                         type="h",
+                         cex.axis=0.5,
+                         las=1,
+                         lty.hplot=2,
+                         color = color.scale(data$logWarPerSalary, c(0,1,1),c(1,1,0),0),
+                         main=NULL,
+                         zlab="Log-tranformed WAR Per Salary",xlab="Goals",
+                         ylab="Seasons Played",
+                         grid=TRUE)
+score_3d.coords = score_3d$xyz.convert(data$G,data$Seasons,data$logWarPerSalary)
+text(score_3d.coords$x, score_3d.coords$y,labels=data$Last.Name,cex=.5, pos=4)
+```
+
+\FloatBarrier
+
+```{r correlations, echo=FALSE}
+correlationData <- data
+correlationData[, c("logWarPerSalary", "WarPerSalary", "OWarPerSalary", "DWarPerSalary", "WAR", "OWAR", "DWAR")] <- list(NULL)
+correlationVec <- c()
+first <- c()
+second <- c()
+for (i in 1:length(correlationData)) {
+  if (is.numeric(correlationData[,i])) {
+  correlationVec <- c(correlationVec, cor(data$logWarPerSalary, correlationData[,i]))
+  first <- c(first, "logWarPerSalary")
+  second <- c(second, colnames(correlationData)[i])
+  }
+}
+
+dfCorrelation <- as.data.frame(cbind(first, second, correlationVec))
+dfCorrelation <- dfCorrelation[order(dfCorrelation$correlationVec, decreasing = TRUE),]
+rownames(dfCorrelation) <- NULL
+colnames(dfCorrelation) <- c("Variable", "Variable", "Correlation")
+kable(dfCorrelation)
+```
+
+\FloatBarrier
+
+Based off of correlations, variables relating to scoring and offense show the strongest linear associations with the log-transformed WAR per salary. To give a few examples, `G` (goals), `CruG` (crucial goals that either tie the game or take the lead), `G.Wrst` (wrist-shot goals), and `OPS` (offensive point shares) are found at the top. However, it is very important to note that with many offensive metrics at the top, a lot of those statistics will be telling similar stories, so it is expected that a lot of multicollinearity will be present. Thus, more simplistic methods such as linear regression might not be able to suss out important relationships. In addition, there are so many possible variables with similar correlations and similar structures that variable selection methods will most likely play a key part in developing this project, and interactions could very likely be present for important variable, making a random forest or neural network a plausible choice for capturing effects.
+
+One other key note is that similar to all other professional sports, metrics measuring offensive output have been honed thoroughly over the years, but measuring defensive performance remains a work in progress. Seeing a play score goals or contribute to scoring goals is a relatively straightforward process, but measuing a player's impact on preventing goals from occurring is a more subjective process. So it is very possible that the results of this project will lean toward maximizing performance per dollar spent for offense and not quite being able to grasp the same for defense.
